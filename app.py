@@ -101,31 +101,29 @@ def process_and_analyze(ig_url: str, api_key: str) -> dict:
     3. 若為「美食製作」，必須給出具體的「成品名稱」；其他分類此欄位設為 null。
     """
 
-    # 候選模型列表，若遇到 503 自動依序切換
-    candidate_models = ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-1.5-flash']
-    last_err = None
     response = None
+last_err = None
 
-    for model_name in candidate_models:
-        for attempt in range(2):  # 每個模型嘗試兩次
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=[video_file, prompt],
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=VideoAnalysisResult,
-                        temperature=0.2,
-                    ),
-                )
-                if response:
-                    break
-            except Exception as e:
-                last_err = e
-                time.sleep(2)
+# 針對最新 gemini-3.8-flash 模型，若遇 503 忙線自動重試最多 3 次
+for attempt in range(3):
+    try:
+        response = client.models.generate_content(
+            model='gemini-3.8-flash',
+            contents=[video_file, prompt],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=VideoAnalysisResult,
+                temperature=0.2,
+            ),
+        )
         if response:
             break
+    except Exception as e:
+        last_err = e
+        time.sleep(4)  # 稍微等待 4 秒避開尖峰
 
+if not response:
+    raise last_err
     client.files.delete(name=video_file.name)
 
     if not response:
