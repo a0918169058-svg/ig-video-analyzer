@@ -57,7 +57,7 @@ class VideoAnalysisResult(BaseModel):
         description="給出分類與評分的具體分析原因"
     )
 
-# 4. 記憶體串流分析核心（含防塞車容錯重試機制）
+# 4. 記憶體串流分析核心
 def process_and_analyze(ig_url: str, api_key: str) -> dict:
     ydl_opts = {
         'format': 'best[ext=mp4]/best',
@@ -102,28 +102,26 @@ def process_and_analyze(ig_url: str, api_key: str) -> dict:
     """
 
     response = None
-last_err = None
+    last_err = None
 
-# 針對最新 gemini-3.8-flash 模型，若遇 503 忙線自動重試最多 3 次
-for attempt in range(3):
-    try:
-        response = client.models.generate_content(
-            model='gemini-3.8-flash',
-            contents=[video_file, prompt],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=VideoAnalysisResult,
-                temperature=0.2,
-            ),
-        )
-        if response:
-            break
-    except Exception as e:
-        last_err = e
-        time.sleep(4)  # 稍微等待 4 秒避開尖峰
+    # 針對 gemini-3.8-flash 模型，若遇 503 伺服器忙線自動等待重試最多 3 次
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model='gemini-3.8-flash',
+                contents=[video_file, prompt],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=VideoAnalysisResult,
+                    temperature=0.2,
+                ),
+            )
+            if response:
+                break
+        except Exception as e:
+            last_err = e
+            time.sleep(3)
 
-if not response:
-    raise last_err
     client.files.delete(name=video_file.name)
 
     if not response:
@@ -135,7 +133,7 @@ if not response:
     result_dict["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     return result_dict
 
-# 5. 前端操作介面
+# 5. 前端頁面標籤架構
 tab_analyze, tab_library = st.tabs(["🔍 分析新影片", "📚 我的影片靈感庫"])
 
 with tab_analyze:
@@ -146,7 +144,7 @@ with tab_analyze:
         elif not ig_url:
             st.warning("請先輸入 IG 影片網址！")
         else:
-            with st.spinner("AI 正在串流分析影片中（若遇塞車將自動重試）..."):
+            with st.spinner("AI 正在串流分析影片中（若遇忙線將自動重試）..."):
                 try:
                     result = process_and_analyze(ig_url, saved_api_key)
                     save_to_history(result)
