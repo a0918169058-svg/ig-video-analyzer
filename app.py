@@ -98,7 +98,7 @@ class VideoAnalysisResult(BaseModel):
         description="總體分析與星級評定依據"
     )
 
-# 4. 串流分析核心（通用相容 IG / FB / Shorts）
+# 4. 串流分析核心
 def process_and_analyze(video_url: str, api_key: str) -> dict:
     clean_url = video_url.split("?si=")[0].split("&")[0]
 
@@ -114,21 +114,17 @@ def process_and_analyze(video_url: str, api_key: str) -> dict:
         
         video_direct_url = None
         
-        # 1. 優先從 formats 尋找包含影音的 mp4 直鏈
         if 'formats' in info:
-            # 優先找同時有影像和聲音的串流
             for f in reversed(info['formats']):
                 if f.get('url') and f.get('vcodec') != 'none' and f.get('acodec') != 'none':
                     video_direct_url = f.get('url')
                     break
-            # 若無合併軌，取最佳影像軌
             if not video_direct_url:
                 for f in reversed(info['formats']):
                     if f.get('url') and f.get('vcodec') != 'none':
                         video_direct_url = f.get('url')
                         break
         
-        # 2. 次選根節點直鏈
         if not video_direct_url:
             video_direct_url = info.get('url')
 
@@ -150,8 +146,11 @@ def process_and_analyze(video_url: str, api_key: str) -> dict:
         config={'mime_type': 'video/mp4'}
     )
 
-    while video_file.state.name == "PROCESSING":
-        time.sleep(1.5)
+    # 嚴格等待直到影片轉檔完成變為 ACTIVE 狀態
+    while video_file.state.name != "ACTIVE":
+        if video_file.state.name == "FAILED":
+            raise ValueError("Google 伺服器處理該影片轉檔失敗，請更換連結或稍後重試。")
+        time.sleep(2)
         video_file = client.files.get(name=video_file.name)
 
     prompt = """
