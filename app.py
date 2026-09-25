@@ -15,7 +15,7 @@ from datetime import datetime
 st.set_page_config(page_title="IG 影片靈感庫", layout="wide")
 st.title("📱 我的 IG 靈感與分析庫")
 
-# 2. 本地資料儲存與讀取 (免密碼，直接載入)
+# 2. 本地資料儲存與讀取
 DATA_FILE = "history.json"
 saved_api_key = st.secrets.get("GEMINI_API_KEY", "")
 
@@ -30,7 +30,7 @@ def load_history():
 
 def save_to_history(record):
     history = load_history()
-    history.insert(0, record)  # 最新分析排在最上方
+    history.insert(0, record)
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
 
@@ -57,7 +57,7 @@ class VideoAnalysisResult(BaseModel):
         description="給出分類與評分的具體分析原因"
     )
 
-# 4. 記憶體串流分析核心
+# 4. 記憶體串流分析核心（含防塞車容錯重試機制）
 def process_and_analyze(ig_url: str, api_key: str) -> dict:
     ydl_opts = {
         'format': 'best[ext=mp4]/best',
@@ -101,36 +101,54 @@ def process_and_analyze(ig_url: str, api_key: str) -> dict:
     3. 若為「美食製作」，必須給出具體的「成品名稱」；其他分類此欄位設為 null。
     """
 
-    response = client.models.generate_content(
-        model='gemini-3.8-flash',
-        contents=[video_file, prompt],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=VideoAnalysisResult,
-            temperature=0.2,
-        ),
-    )
+    # 候選模型列表，若遇到 503 自動依序切換
+    candidate_models = ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-1.5-flash']
+    last_err = None
+    response = None
+
+    for model_name in candidate_models:
+        for attempt in range(2):  # 每個模型嘗試兩次
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[video_file, prompt],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=VideoAnalysisResult,
+                        temperature=0.2,
+                    ),
+                )
+                if response:
+                    break
+            except Exception as e:
+                last_err = e
+                time.sleep(2)
+        if response:
+            break
 
     client.files.delete(name=video_file.name)
+
+    if not response:
+        raise last_err
+
     result_dict = json.loads(response.text)
     result_dict["url"] = ig_url
     result_dict["title"] = video_title[:40] if video_title else "未命名影片"
     result_dict["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     return result_dict
 
-# 5. 前端頁面標籤架構
+# 5. 前端操作介面
 tab_analyze, tab_library = st.tabs(["🔍 分析新影片", "📚 我的影片靈感庫"])
 
-# === 分頁 1: 分析新影片 ===
 with tab_analyze:
     ig_url = st.text_input("貼上 Instagram Reels / 影片連結", placeholder="https://www.instagram.com/reel/...")
     if st.button("開始分析並儲存", type="primary"):
         if not saved_api_key:
-            st.error("系統尚未設定 GEMINI_API_KEY！請檢查 Secrets 設定。")
+            st.error("系統尚未設定 GEMINI_API_KEY！")
         elif not ig_url:
             st.warning("請先輸入 IG 影片網址！")
         else:
-            with st.spinner("AI 正在串流分析影片中..."):
+            with st.spinner("AI 正在串流分析影片中（若遇塞車將自動重試）..."):
                 try:
                     result = process_and_analyze(ig_url, saved_api_key)
                     save_to_history(result)
@@ -151,7 +169,6 @@ with tab_analyze:
                 except Exception as e:
                     st.error(f"分析失敗：{e}")
 
-# === 分頁 2: 我的靈感庫 ===
 with tab_library:
     records = load_history()
     if not records:
@@ -196,4 +213,3 @@ with tab_library:
                         delete_record(idx)
                         st.rerun()
                 st.divider()
-              
