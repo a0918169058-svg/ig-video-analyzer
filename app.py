@@ -118,7 +118,7 @@ class VideoAnalysisResult(BaseModel):
     key_steps_or_tips: List[str] = Field(default_factory=list, description="關鍵步驟或口訣")
     analysis_reason: str = Field(description="分析說明")
 
-# 4. 串流分析核心（多模型輪流調度機制，避開 429 配額）
+# 4. 串流分析核心（官方指定 gemini-3.8-flash，內建冷卻重試）
 def process_and_analyze(ig_url: str, api_key: str) -> dict:
     ydl_opts = {'format': 'best[ext=mp4]/best', 'quiet': True, 'no_warnings': True}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -154,28 +154,25 @@ def process_and_analyze(ig_url: str, api_key: str) -> dict:
 
     response = None
     last_err = None
-    # 輪詢免費額度充足的 Flash 模型
-    candidate_models = ['gemini-2.5-flash', 'gemini-2.0-flash']
 
-    for model_name in candidate_models:
-        for attempt in range(2):
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=[video_file, prompt],
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=VideoAnalysisResult,
-                        temperature=0.2,
-                    ),
-                )
-                if response:
-                    break
-            except Exception as e:
-                last_err = e
-                time.sleep(2)
-        if response:
-            break
+    # 針對 gemini-3.8-flash 執行重試，遇 429 速率限制自動等待
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model='gemini-3.8-flash',
+                contents=[video_file, prompt],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=VideoAnalysisResult,
+                    temperature=0.2,
+                ),
+            )
+            if response:
+                break
+        except Exception as e:
+            last_err = e
+            # 若觸發每分鐘速率限制，等待 15 秒後再次重試
+            time.sleep(15)
 
     client.files.delete(name=video_file.name)
     if not response:
