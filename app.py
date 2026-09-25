@@ -12,8 +12,8 @@ from typing import Optional, Literal, List
 from datetime import datetime
 
 # 1. 網頁基本設定
-st.set_page_config(page_title="IG 靈感行動庫", layout="wide")
-st.title("📱 我的 IG 靈感行動庫")
+st.set_page_config(page_title="貼上 IG Reels / FB 影片 / Shorts 連結", layout="wide")
+st.title("📱 靈感行動庫 (IG / FB / Shorts)")
 
 # 2. 本地資料儲存與讀取核心
 DATA_FILE = "history.json"
@@ -171,7 +171,7 @@ tab_analyze, tab_library = st.tabs(["🔍 分析新影片", "📚 我的影片�
 
 with tab_analyze:
     default_url = st.query_params.get("url", "")
-    ig_url = st.text_input("貼上 Instagram Reels / 影片連結", value=default_url, placeholder="https://www.instagram.com/reel/...")
+    ig_url = st.text_input("貼上 IG Reels / FB 影片 / Shorts 連結", value=default_url, placeholder="https://www.instagram.com/reel/...")
     
     if st.button("開始分析並儲存", type="primary"):
         if not saved_api_key:
@@ -291,7 +291,7 @@ with tab_library:
                             st.success("筆記已更新！")
                             st.rerun()
 
-                    st.caption(f"新增時間：{item.get('created_at', '未知')} | [🔗 開啟 IG 原影片]({item.get('url')})")
+                    st.caption(f"新增時間：{item.get('created_at', '未知')} | [🔗 開啟原影片]({item.get('url')})")
 
                 with c2:
                     st.markdown(f"**分類**：`{item.get('category')}`")
