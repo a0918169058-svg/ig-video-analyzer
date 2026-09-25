@@ -98,26 +98,39 @@ class VideoAnalysisResult(BaseModel):
         description="總體分析與星級評定依據"
     )
 
-# 4. 串流分析核心（強健支援 YouTube Shorts / IG / FB 直鏈抓取）
+# 4. 串流分析核心（通用相容 IG / FB / Shorts）
 def process_and_analyze(video_url: str, api_key: str) -> dict:
-    clean_url = video_url.split("?si=")[0]
+    clean_url = video_url.split("?si=")[0].split("&")[0]
 
     ydl_opts = {
-        'format': 'best[ext=mp4]/best',
         'quiet': True,
         'no_warnings': True,
+        'noplaylist': True,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(clean_url, download=False)
         video_title = info.get('title', '短影音')
         video_thumbnail = info.get('thumbnail', '')
         
-        video_direct_url = info.get('url')
-        if not video_direct_url and 'formats' in info:
+        video_direct_url = None
+        
+        # 1. 優先從 formats 尋找包含影音的 mp4 直鏈
+        if 'formats' in info:
+            # 優先找同時有影像和聲音的串流
             for f in reversed(info['formats']):
-                if f.get('url') and f.get('vcodec') != 'none':
+                if f.get('url') and f.get('vcodec') != 'none' and f.get('acodec') != 'none':
                     video_direct_url = f.get('url')
                     break
+            # 若無合併軌，取最佳影像軌
+            if not video_direct_url:
+                for f in reversed(info['formats']):
+                    if f.get('url') and f.get('vcodec') != 'none':
+                        video_direct_url = f.get('url')
+                        break
+        
+        # 2. 次選根節點直鏈
+        if not video_direct_url:
+            video_direct_url = info.get('url')
 
         if not video_direct_url:
             raise ValueError("無法解析出影片串流直鏈，請確認該影片是否為公開貼文。")
