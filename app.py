@@ -25,13 +25,11 @@ def load_history():
         if df is None or df.empty:
             return []
         
-        # 轉換成乾淨的字典列表
         records = []
         for _, row in df.iterrows():
             if pd.isna(row.get("id")):
                 continue
             
-            # 解析 list 欄位
             props_raw = str(row.get("ingredients_or_props", ""))
             tips_raw = str(row.get("key_steps_or_tips", ""))
             
@@ -187,9 +185,10 @@ def process_and_analyze(ig_url: str, api_key: str) -> dict:
 tab_analyze, tab_library = st.tabs(["🔍 分析新影片", "📚 我的影片靈感庫"])
 
 with tab_analyze:
-    # 自動讀取網址參數 ?url=
-default_url = st.query_params.get("url", "")
-ig_url = st.text_input("貼上 Instagram Reels / 影片連結", value=default_url, placeholder="https://www.instagram.com/reel/...")
+    # 支援 URL 參數自動帶入（優化 4）
+    default_url = st.query_params.get("url", "")
+    ig_url = st.text_input("貼上 Instagram Reels / 影片連結", value=default_url, placeholder="https://www.instagram.com/reel/...")
+    
     if st.button("開始分析並儲存至 Google 試算表", type="primary"):
         if not saved_api_key:
             st.error("尚未設定 GEMINI_API_KEY！")
