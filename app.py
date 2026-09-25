@@ -97,16 +97,17 @@ class VideoAnalysisResult(BaseModel):
         description="總體分析與星級評定依據"
     )
 
-# 4. 串流分析核心（使用暫存檔確保 100% 正確編碼相容性）
+# 4. 串流分析核心
 def process_and_analyze(video_url: str, api_key: str) -> dict:
     clean_url = video_url.split("?si=")[0].split("&")[0]
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        temp_video_path = os.path.join(tmp_dir, "temp_video.mp4")
+        temp_video_template = os.path.join(tmp_dir, "video.%(ext)s")
         
+        # 允許 yt-dlp 自動選擇最合適格式，並自動處理音訊與影像
         ydl_opts = {
-            'outtmpl': temp_video_path,
-            'format': 'best[ext=mp4]/best',
+            'outtmpl': temp_video_template,
+            'format': 'b/bestvideo+bestaudio/best',
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
@@ -117,19 +118,15 @@ def process_and_analyze(video_url: str, api_key: str) -> dict:
             video_title = info.get('title', '短影音')
             video_thumbnail = info.get('thumbnail', '')
 
-        # 如果檔案名稱被加了副檔名，做路徑相容
-        actual_path = temp_video_path
-        if not os.path.exists(actual_path):
-            files = os.listdir(tmp_dir)
-            if files:
-                actual_path = os.path.join(tmp_dir, files[0])
-            else:
-                raise ValueError("影片下載失敗，請確認該影片是否為公開貼文。")
+        downloaded_files = os.listdir(tmp_dir)
+        if not downloaded_files:
+            raise ValueError("影片下載失敗，請確認該影片是否為公開貼文。")
+        
+        actual_path = os.path.join(tmp_dir, downloaded_files[0])
 
         client = genai.Client(api_key=api_key)
         video_file = client.files.upload(
-            file=actual_path,
-            config={'mime_type': 'video/mp4'}
+            file=actual_path
         )
 
         while video_file.state.name != "ACTIVE":
