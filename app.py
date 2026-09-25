@@ -68,7 +68,7 @@ def update_record_by_id(record_id, is_done=None, user_note=None):
             break
     save_all_history(history)
 
-# 3. 定義結構化 AI 輸出格式（加入人數屬性）
+# 3. 定義結構化 AI 輸出格式
 class VideoAnalysisResult(BaseModel):
     category: Literal["攝影技巧", "美食製作", "跳舞或搞笑cover", "其他"] = Field(
         description="影片分類"
@@ -98,23 +98,27 @@ class VideoAnalysisResult(BaseModel):
         description="總體分析與星級評定依據"
     )
 
-# 4. 串流分析核心（相容 Shorts / IG / FB 格式）
+# 4. 串流分析核心（強健支援 YouTube Shorts / IG / FB 直鏈抓取）
 def process_and_analyze(video_url: str, api_key: str) -> dict:
+    clean_url = video_url.split("?si=")[0]
+
     ydl_opts = {
-        'format': 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio/best',
+        'format': 'best[ext=mp4]/best',
         'quiet': True,
         'no_warnings': True,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(video_url, download=False)
-        video_direct_url = info.get('url')
+        info = ydl.extract_info(clean_url, download=False)
         video_title = info.get('title', '短影音')
         video_thumbnail = info.get('thumbnail', '')
-        if not video_direct_url:
-            # 部分平台由 entries 構成
-            if 'entries' in info and info['entries']:
-                video_direct_url = info['entries'][0].get('url')
-                video_thumbnail = info['entries'][0].get('thumbnail', video_thumbnail)
+        
+        video_direct_url = info.get('url')
+        if not video_direct_url and 'formats' in info:
+            for f in reversed(info['formats']):
+                if f.get('url') and f.get('vcodec') != 'none':
+                    video_direct_url = f.get('url')
+                    break
+
         if not video_direct_url:
             raise ValueError("無法解析出影片串流直鏈，請確認該影片是否為公開貼文。")
 
