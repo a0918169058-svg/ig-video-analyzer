@@ -98,10 +98,10 @@ class VideoAnalysisResult(BaseModel):
         description="總體分析與星級評定依據"
     )
 
-# 4. 串流分析核心
+# 4. 串流分析核心（相容 Shorts / IG / FB 格式）
 def process_and_analyze(video_url: str, api_key: str) -> dict:
     ydl_opts = {
-        'format': 'best[ext=mp4]/best',
+        'format': 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio/best',
         'quiet': True,
         'no_warnings': True,
     }
@@ -110,6 +110,11 @@ def process_and_analyze(video_url: str, api_key: str) -> dict:
         video_direct_url = info.get('url')
         video_title = info.get('title', '短影音')
         video_thumbnail = info.get('thumbnail', '')
+        if not video_direct_url:
+            # 部分平台由 entries 構成
+            if 'entries' in info and info['entries']:
+                video_direct_url = info['entries'][0].get('url')
+                video_thumbnail = info['entries'][0].get('thumbnail', video_thumbnail)
         if not video_direct_url:
             raise ValueError("無法解析出影片串流直鏈，請確認該影片是否為公開貼文。")
 
@@ -239,7 +244,6 @@ with tab_library:
     else:
         search_query = st.text_input("🔍 搜尋靈感庫（輸入食材、菜名、動作關鍵字...）", placeholder="例如：義大利麵、雞胸、運鏡...")
 
-        # 頂部篩選器：加入人數篩選
         col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns([2, 2, 2, 2, 2])
         with col_f1:
             category_filter = st.selectbox("📂 分類", ["全部", "美食製作", "跳舞或搞笑cover", "攝影技巧", "其他"])
