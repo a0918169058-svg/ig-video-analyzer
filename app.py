@@ -97,20 +97,28 @@ class VideoAnalysisResult(BaseModel):
         description="總體分析與星級評定依據"
     )
 
-# 4. 串流分析核心（免 ffmpeg 也能順利下載單一檔案）
+# 4. 串流分析核心（帶 Android 偽裝防空檔機制）
 def process_and_analyze(video_url: str, api_key: str) -> dict:
     clean_url = video_url.split("?si=")[0].split("&")[0]
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         temp_video_template = os.path.join(tmp_dir, "video.%(ext)s")
         
-        # 關鍵：只抓單一串流（不合併），避免觸發 ffmpeg 缺失錯誤
         ydl_opts = {
             'outtmpl': temp_video_template,
-            'format': 'best[ext=mp4]/bestvideo[ext=mp4]/best',
+            'format': 'best[ext=mp4]/best',
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
+            # 關鍵偽裝：避開 YouTube 對機房 IP 的阻斷與回傳空檔案
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'ios', 'web']
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
+            }
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -118,11 +126,15 @@ def process_and_analyze(video_url: str, api_key: str) -> dict:
             video_title = info.get('title', '短影音')
             video_thumbnail = info.get('thumbnail', '')
 
-        downloaded_files = os.listdir(tmp_dir)
+        downloaded_files = [f for f in os.listdir(tmp_dir) if not f.endswith('.part')]
         if not downloaded_files:
             raise ValueError("影片下載失敗，請確認該影片是否為公開貼文。")
         
         actual_path = os.path.join(tmp_dir, downloaded_files[0])
+        
+        # 檢查是否為空檔案
+        if os.path.getsize(actual_path) == 0:
+            raise ValueError("取得之影片內容為空，該影片可能限制跨國訪問或受隱私保護。")
 
         client = genai.Client(api_key=api_key)
         video_file = client.files.upload(
