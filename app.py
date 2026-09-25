@@ -12,8 +12,8 @@ from typing import Optional, Literal, List
 from datetime import datetime
 
 # 1. 網頁基本設定
-st.set_page_config(page_title="貼上 IG Reels / FB 影片 / Shorts 連結", layout="wide")
-st.title("📱 靈感行動庫 (IG / FB / Shorts)")
+st.set_page_config(page_title="靈感行動庫 (IG / FB / 短影音)", layout="wide")
+st.title("📱 靈感行動庫 (IG / FB / 短影音)")
 
 # 2. 本地資料儲存與讀取核心
 DATA_FILE = "history.json"
@@ -31,6 +31,8 @@ def load_history():
                         item["is_done"] = False
                     if "user_note" not in item:
                         item["user_note"] = ""
+                    if "thumbnail" not in item:
+                        item["thumbnail"] = ""
                 return data
         except Exception:
             return []
@@ -92,16 +94,17 @@ class VideoAnalysisResult(BaseModel):
     )
 
 # 4. 串流分析核心
-def process_and_analyze(ig_url: str, api_key: str) -> dict:
+def process_and_analyze(video_url: str, api_key: str) -> dict:
     ydl_opts = {
         'format': 'best[ext=mp4]/best',
         'quiet': True,
         'no_warnings': True,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(ig_url, download=False)
+        info = ydl.extract_info(video_url, download=False)
         video_direct_url = info.get('url')
-        video_title = info.get('title', 'IG 影片')
+        video_title = info.get('title', '短影音')
+        video_thumbnail = info.get('thumbnail', '')
         if not video_direct_url:
             raise ValueError("無法解析出影片串流直鏈，請確認該影片是否為公開貼文。")
 
@@ -161,46 +164,55 @@ def process_and_analyze(ig_url: str, api_key: str) -> dict:
         raise last_err
 
     result_dict = json.loads(response.text)
-    result_dict["url"] = ig_url
+    result_dict["url"] = video_url
     result_dict["title"] = video_title[:40] if video_title else "未命名影片"
+    result_dict["thumbnail"] = video_thumbnail
     result_dict["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     return result_dict
 
-# 5. 前端頁面
+# 5. 前端介面
 tab_analyze, tab_library = st.tabs(["🔍 分析新影片", "📚 我的影片靈感庫"])
 
 with tab_analyze:
     default_url = st.query_params.get("url", "")
-    ig_url = st.text_input("貼上 IG Reels / FB 影片 / Shorts 連結", value=default_url, placeholder="https://www.instagram.com/reel/...")
+    video_input = st.text_input("貼上 IG Reels / FB 影片 / Shorts 連結", value=default_url, placeholder="支援 IG、Facebook、Shorts 公開影片連結...")
     
     if st.button("開始分析並儲存", type="primary"):
         if not saved_api_key:
             st.error("系統尚未設定 GEMINI_API_KEY！")
-        elif not ig_url:
-            st.warning("請先輸入 IG 影片網址！")
+        elif not video_input:
+            st.warning("請先輸入影片網址！")
         else:
             with st.spinner("AI 正在深度解析動作/食材與步驟重點..."):
                 try:
-                    result = process_and_analyze(ig_url, saved_api_key)
+                    result = process_and_analyze(video_input, saved_api_key)
                     save_to_history(result)
                     st.success("🎉 分析完成！已整理執行重點並存入靈感庫！")
                     
-                    c1, c2, c3 = st.columns(3)
-                    with c1:
-                        st.metric("分類", result["category"])
-                    with c2:
-                        stars = "★" * result["difficulty_rating"] + "☆" * (5 - result["difficulty_rating"])
-                        st.metric("難度", f"{stars} ({result['difficulty_rating']}/5)")
-                    with c3:
-                        st.metric("預估耗時", result.get("estimated_time", "未知"))
-                    
-                    if result["category"] == "美食製作" and result.get("dish_name"):
-                        st.subheader(f"🍳 成品：{result['dish_name']}")
+                    c_thumb, c_info = st.columns([1, 3])
+                    with c_thumb:
+                        if result.get("thumbnail"):
+                            st.image(result["thumbnail"], use_container_width=True)
+                    with c_info:
+                        c1, c2, c3 = st.columns(3)
+                        with c1:
+                            st.metric("分類", result["category"])
+                        with c2:
+                            stars = "★" * result["difficulty_rating"] + "☆" * (5 - result["difficulty_rating"])
+                            st.metric("難度", f"{stars} ({result['difficulty_rating']}/5)")
+                        with c3:
+                            st.metric("預估耗時", result.get("estimated_time", "未知"))
+                        
+                        if result["category"] == "美食製作" and result.get("dish_name"):
+                            st.subheader(f"🍳 成品：{result['dish_name']}")
 
                     if result.get("ingredients_or_props"):
                         header = "🛒 食材備料清單" if result["category"] == "美食製作" else "🎒 必備道具/鏡頭"
                         st.markdown(f"**{header}**：")
                         st.write("、 ".join(result["ingredients_or_props"]))
+                        if result["category"] == "美食製作":
+                            st.caption("📋 採買備忘（右上角可一鍵複製）：")
+                            st.code("\n".join(result["ingredients_or_props"]), language="text")
 
                     if result.get("key_steps_or_tips"):
                         st.markdown("**💡 關鍵執行要點與技巧：**")
@@ -266,17 +278,32 @@ with tab_library:
             stars = "★" * item.get("difficulty_rating", 1) + "☆" * (5 - item.get("difficulty_rating", 1))
             time_tag = item.get("estimated_time", "時間未標")
             is_done = item.get("is_done", False)
+            thumb_url = item.get("thumbnail", "")
 
             with st.container():
-                c1, c2, c3 = st.columns([5, 2, 1])
-                with c1:
+                # 視覺化卡片佈局：縮圖(2) + 內容(5) + 狀態/評級(2) + 刪除(1)
+                col_pic, col_main, col_side, col_del = st.columns([2, 5, 2, 1])
+
+                with col_pic:
+                    if thumb_url:
+                        st.image(thumb_url, use_container_width=True)
+                    else:
+                        st.caption("（無封面預覽）")
+
+                with col_main:
                     status_badge = "✅ [已完成]" if is_done else "⏳ [待嘗試]"
                     title_text = f"🍳 {item['dish_name']}" if item["category"] == "美食製作" and item.get("dish_name") else f"🎬 {item.get('category')}"
                     st.subheader(f"{status_badge} {title_text}")
                     
                     if item.get("ingredients_or_props"):
                         header = "🛒 食材備料" if item["category"] == "美食製作" else "🎒 道具/特點"
-                        st.caption(f"**{header}**：{'、 '.join(item['ingredients_or_props'])}")
+                        st.markdown(f"**{header}**：{'、 '.join(item['ingredients_or_props'])}")
+                        
+                        # 美食提供快速複製小方塊
+                        if item["category"] == "美食製作":
+                            with st.expander("📋 一鍵複製採買清單", expanded=False):
+                                st.caption("點擊右上方圖示即可複製：")
+                                st.code("\n".join(item["ingredients_or_props"]), language="text")
 
                     if item.get("key_steps_or_tips"):
                         st.markdown("**重點步驟 / 技巧口訣**：")
@@ -293,7 +320,7 @@ with tab_library:
 
                     st.caption(f"新增時間：{item.get('created_at', '未知')} | [🔗 開啟原影片]({item.get('url')})")
 
-                with c2:
+                with col_side:
                     st.markdown(f"**分類**：`{item.get('category')}`")
                     st.markdown(f"**難度**：`{stars}` ({item.get('difficulty_rating', 1)}/5)")
                     st.markdown(f"**耗時**：`⏱️ {time_tag}`")
@@ -307,7 +334,7 @@ with tab_library:
                             update_record_by_id(item_id, is_done=True)
                             st.rerun()
 
-                with c3:
+                with col_del:
                     if st.button("🗑️ 刪除", key=f"del_{item_id}"):
                         delete_record_by_id(item_id)
                         st.rerun()
