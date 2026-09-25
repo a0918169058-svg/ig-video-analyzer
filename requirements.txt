@@ -2,3 +2,5 @@ streamlit
 google-genai
 yt-dlp
 pydantic
+st-gsheets-connection
+pandas
