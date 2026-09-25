@@ -33,6 +33,8 @@ def load_history():
                         item["user_note"] = ""
                     if "thumbnail" not in item:
                         item["thumbnail"] = ""
+                    if "people_count" not in item:
+                        item["people_count"] = "單人即可"
                 return data
         except Exception:
             return []
@@ -66,10 +68,13 @@ def update_record_by_id(record_id, is_done=None, user_note=None):
             break
     save_all_history(history)
 
-# 3. 定義結構化 AI 輸出格式
+# 3. 定義結構化 AI 輸出格式（加入人數屬性）
 class VideoAnalysisResult(BaseModel):
     category: Literal["攝影技巧", "美食製作", "跳舞或搞笑cover", "其他"] = Field(
         description="影片分類"
+    )
+    people_count: Literal["單人即可", "雙人搭檔", "3~4人 (小團體)", "5人以上 (大陣仗)"] = Field(
+        description="執行此內容或拍攝所需的人數（跳舞人數、攝影模特/掌鏡人數、或料理適合分食人數）"
     )
     difficulty_rating: int = Field(
         description="難易度評分（1到5星）", ge=1, le=5
@@ -130,9 +135,10 @@ def process_and_analyze(video_url: str, api_key: str) -> dict:
     prompt = """
     分析這段影片的內容，嚴格依據規則進行結構化拆解：
     1. 分類選項：攝影技巧、美食製作、跳舞或搞笑cover、其他。
-    2. 評定難易度（1 到 5 星，1 為新手能直接複製，5 為需專業功底）。
-    3. 評定預估耗時。
-    4. 拆解可執行的清單：
+    2. 評定所需人數：單人即可、雙人搭檔、3~4人 (小團體)、5人以上 (大陣仗)。請仔細看畫面中跳舞的人數、拍照姿勢需要幾人出鏡或掌鏡。
+    3. 評定難易度（1 到 5 星，1 為新手能直接複製，5 為需專業功底）。
+    4. 評定預估耗時。
+    5. 拆解可執行的清單：
        - 若為「美食製作」：必須填寫成品名稱，並在 ingredients_or_props 列出影片中出現的食材備料，在 key_steps_or_tips 列出關鍵操作技巧。
        - 若為「跳舞或搞笑cover」：在 key_steps_or_tips 列出節奏卡點要領或動作記憶點。
        - 若為「攝影技巧」：在 key_steps_or_tips 提煉運鏡口訣或相機設置建議。
@@ -183,7 +189,7 @@ with tab_analyze:
         elif not video_input:
             st.warning("請先輸入影片網址！")
         else:
-            with st.spinner("AI 正在深度解析動作/食材與步驟重點..."):
+            with st.spinner("AI 正在深度解析人數/動作/食材與步驟重點..."):
                 try:
                     result = process_and_analyze(video_input, saved_api_key)
                     save_to_history(result)
@@ -194,13 +200,15 @@ with tab_analyze:
                         if result.get("thumbnail"):
                             st.image(result["thumbnail"], use_container_width=True)
                     with c_info:
-                        c1, c2, c3 = st.columns(3)
+                        c1, c2, c3, c4 = st.columns(4)
                         with c1:
                             st.metric("分類", result["category"])
                         with c2:
+                            st.metric("建議人數", result.get("people_count", "單人即可"))
+                        with c3:
                             stars = "★" * result["difficulty_rating"] + "☆" * (5 - result["difficulty_rating"])
                             st.metric("難度", f"{stars} ({result['difficulty_rating']}/5)")
-                        with c3:
+                        with c4:
                             st.metric("預估耗時", result.get("estimated_time", "未知"))
                         
                         if result["category"] == "美食製作" and result.get("dish_name"):
@@ -231,14 +239,17 @@ with tab_library:
     else:
         search_query = st.text_input("🔍 搜尋靈感庫（輸入食材、菜名、動作關鍵字...）", placeholder="例如：義大利麵、雞胸、運鏡...")
 
-        col_f1, col_f2, col_f3, col_f4 = st.columns([2, 2, 2, 2])
+        # 頂部篩選器：加入人數篩選
+        col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns([2, 2, 2, 2, 2])
         with col_f1:
             category_filter = st.selectbox("📂 分類", ["全部", "美食製作", "跳舞或搞笑cover", "攝影技巧", "其他"])
         with col_f2:
-            time_filter = st.selectbox("⏱️ 耗時篩選", ["全部時間", "15分鐘以內 (快手)", "15~30分鐘 (日常)", "30~60分鐘 (精緻)", "1小時以上 (挑戰)"])
+            people_filter = st.selectbox("👥 人數需求", ["全部人數", "單人即可", "雙人搭檔", "3~4人 (小團體)", "5人以上 (大陣仗)"])
         with col_f3:
-            status_filter = st.selectbox("📌 執行狀態", ["全部", "⏳ 待嘗試", "✅ 已完成"])
+            time_filter = st.selectbox("⏱️ 耗時篩選", ["全部時間", "15分鐘以內 (快手)", "15~30分鐘 (日常)", "30~60分鐘 (精緻)", "1小時以上 (挑戰)"])
         with col_f4:
+            status_filter = st.selectbox("📌 執行狀態", ["全部", "⏳ 待嘗試", "✅ 已完成"])
+        with col_f5:
             sort_order = st.selectbox("⭐ 排序方式", ["最新加入優先", "從最簡單開始 (★ ➔ ★★★★★)", "從高難度挑戰 (★★★★★ ➔ ★)"])
 
         filtered = records
@@ -256,6 +267,9 @@ with tab_library:
 
         if category_filter != "全部":
             filtered = [r for r in filtered if r.get("category") == category_filter]
+
+        if people_filter != "全部人數":
+            filtered = [r for r in filtered if r.get("people_count", "單人即可") == people_filter]
 
         if time_filter != "全部時間":
             filtered = [r for r in filtered if r.get("estimated_time") == time_filter]
@@ -277,11 +291,11 @@ with tab_library:
             item_id = item.get("id")
             stars = "★" * item.get("difficulty_rating", 1) + "☆" * (5 - item.get("difficulty_rating", 1))
             time_tag = item.get("estimated_time", "時間未標")
+            people_tag = item.get("people_count", "單人即可")
             is_done = item.get("is_done", False)
             thumb_url = item.get("thumbnail", "")
 
             with st.container():
-                # 視覺化卡片佈局：縮圖(2) + 內容(5) + 狀態/評級(2) + 刪除(1)
                 col_pic, col_main, col_side, col_del = st.columns([2, 5, 2, 1])
 
                 with col_pic:
@@ -299,7 +313,6 @@ with tab_library:
                         header = "🛒 食材備料" if item["category"] == "美食製作" else "🎒 道具/特點"
                         st.markdown(f"**{header}**：{'、 '.join(item['ingredients_or_props'])}")
                         
-                        # 美食提供快速複製小方塊
                         if item["category"] == "美食製作":
                             with st.expander("📋 一鍵複製採買清單", expanded=False):
                                 st.caption("點擊右上方圖示即可複製：")
@@ -322,6 +335,7 @@ with tab_library:
 
                 with col_side:
                     st.markdown(f"**分類**：`{item.get('category')}`")
+                    st.markdown(f"**人數**：`👥 {people_tag}`")
                     st.markdown(f"**難度**：`{stars}` ({item.get('difficulty_rating', 1)}/5)")
                     st.markdown(f"**耗時**：`⏱️ {time_tag}`")
                     
