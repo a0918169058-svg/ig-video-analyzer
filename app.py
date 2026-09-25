@@ -3,6 +3,7 @@ import time
 import json
 import os
 import tempfile
+import urllib.request
 import yt_dlp
 from google import genai
 from google.genai import types
@@ -97,99 +98,116 @@ class VideoAnalysisResult(BaseModel):
         description="總體分析與星級評定依據"
     )
 
-# 4. 串流分析核心（帶 Android 偽裝防空檔機制）
+# 4. 串流分析核心
 def process_and_analyze(video_url: str, api_key: str) -> dict:
     clean_url = video_url.split("?si=")[0].split("&")[0]
+    client = genai.Client(api_key=api_key)
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        temp_video_template = os.path.join(tmp_dir, "video.%(ext)s")
-        
-        ydl_opts = {
-            'outtmpl': temp_video_template,
-            'format': 'best[ext=mp4]/best',
-            'quiet': True,
-            'no_warnings': True,
-            'noplaylist': True,
-            # 關鍵偽裝：避開 YouTube 對機房 IP 的阻斷與回傳空檔案
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'ios', 'web']
-                }
-            },
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
-            }
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(clean_url, download=True)
-            video_title = info.get('title', '短影音')
-            video_thumbnail = info.get('thumbnail', '')
+    is_youtube = ("youtube.com" in clean_url) or ("youtu.be" in clean_url)
+    
+    video_title = "短影音"
+    video_thumbnail = ""
+    contents_payload = []
+    uploaded_file_name = None
 
-        downloaded_files = [f for f in os.listdir(tmp_dir) if not f.endswith('.part')]
-        if not downloaded_files:
-            raise ValueError("影片下載失敗，請確認該影片是否為公開貼文。")
-        
-        actual_path = os.path.join(tmp_dir, downloaded_files[0])
-        
-        # 檢查是否為空檔案
-        if os.path.getsize(actual_path) == 0:
-            raise ValueError("取得之影片內容為空，該影片可能限制跨國訪問或受隱私保護。")
-
-        client = genai.Client(api_key=api_key)
-        video_file = client.files.upload(
-            file=actual_path
-        )
-
-        while video_file.state.name != "ACTIVE":
-            if video_file.state.name == "FAILED":
-                raise ValueError("Google 伺服器處理該影片轉檔失敗，可能該影片受版權保護。")
-            time.sleep(2)
-            video_file = client.files.get(name=video_file.name)
-
-        prompt = """
-        分析這段影片的內容，嚴格依據規則進行結構化拆解：
-        1. 分類選項：攝影技巧、美食製作、跳舞或搞笑cover、其他。
-        2. 評定所需人數：單人即可、雙人搭檔、3~4人 (小團體)、5人以上 (大陣仗)。請仔細看畫面中跳舞的人數、拍照姿勢需要幾人出鏡或掌鏡。
-        3. 評定難易度（1 到 5 星，1 為新手能直接複製，5 為需專業功底）。
-        4. 評定預估耗時。
-        5. 拆解可執行的清單：
+    prompt = """
+    分析這段影片的內容，嚴格依據規則進行結構化拆解：
+    1. 分類選項：攝影技巧、美食製作、跳舞或搞笑cover、其他。
+    2. 評定所需人數：單人即可、雙人搭檔、3~4人 (小團體)、5人以上 (大陣仗)。請仔細看畫面中跳舞的人數、拍照姿勢需要幾人出鏡或掌鏡。
+    3. 評定難易度（1 到 5 星，1 為新手能直接複製，5 為需專業功底）。
+    4. 評定預估耗時。
+    5. 拆解可執行的清單：
        - 若為「美食製作」：必須填寫成品名稱，並在 ingredients_or_props 列出影片中出現的食材備料，在 key_steps_or_tips 列出關鍵操作技巧。
        - 若為「跳舞或搞笑cover」：在 key_steps_or_tips 列出節奏卡點要領或動作記憶點。
        - 若為「攝影技巧」：在 key_steps_or_tips 提煉運鏡口訣或相機設置建議。
-        """
+    """
 
-        response = None
-        last_err = None
+    if is_youtube:
+        # YouTube 專用通道：抓取中繼資訊以取得標題與縮圖
+        ydl_opts = {'quiet': True, 'no_warnings': True, 'skip_download': True}
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(clean_url, download=False)
+                video_title = info.get('title', 'YouTube Shorts')
+                video_thumbnail = info.get('thumbnail', '')
+        except Exception:
+            pass
+        
+        # 直接使用 Part.from_uri 傳入 YouTube 網址，免下載、避開 403 阻斷
+        contents_payload = [
+            types.Part.from_uri(
+                file_uri=clean_url,
+                mime_type="video/*",
+            ),
+            prompt
+        ]
+    else:
+        # IG / FB 通道：使用 yt-dlp 抓取串流並上傳
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            temp_video_template = os.path.join(tmp_dir, "video.%(ext)s")
+            ydl_opts = {
+                'outtmpl': temp_video_template,
+                'format': 'best[ext=mp4]/best',
+                'quiet': True,
+                'no_warnings': True,
+                'noplaylist': True,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(clean_url, download=True)
+                video_title = info.get('title', '短影音')
+                video_thumbnail = info.get('thumbnail', '')
 
-        for attempt in range(3):
-            try:
-                response = client.models.generate_content(
-                    model='gemini-3.8-flash',
-                    contents=[video_file, prompt],
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=VideoAnalysisResult,
-                        temperature=0.2,
-                    ),
-                )
-                if response:
-                    break
-            except Exception as e:
-                last_err = e
-                time.sleep(15)
+            files = os.listdir(tmp_dir)
+            if not files:
+                raise ValueError("無法取得影片內容，請確認是否為公開貼文。")
+            actual_path = os.path.join(tmp_dir, files[0])
 
-        client.files.delete(name=video_file.name)
+            video_file = client.files.upload(file=actual_path)
+            uploaded_file_name = video_file.name
 
-        if not response:
-            raise last_err
+            while video_file.state.name != "ACTIVE":
+                if video_file.state.name == "FAILED":
+                    raise ValueError("影片處理失敗，請稍後重試。")
+                time.sleep(2)
+                video_file = client.files.get(name=video_file.name)
 
-        result_dict = json.loads(response.text)
-        result_dict["url"] = video_url
-        result_dict["title"] = video_title[:40] if video_title else "未命名影片"
-        result_dict["thumbnail"] = video_thumbnail
-        result_dict["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-        return result_dict
+            contents_payload = [video_file, prompt]
+
+    response = None
+    last_err = None
+
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model='gemini-3.8-flash',
+                contents=contents_payload,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=VideoAnalysisResult,
+                    temperature=0.2,
+                ),
+            )
+            if response:
+                break
+        except Exception as e:
+            last_err = e
+            time.sleep(15)
+
+    if uploaded_file_name:
+        try:
+            client.files.delete(name=uploaded_file_name)
+        except Exception:
+            pass
+
+    if not response:
+        raise last_err
+
+    result_dict = json.loads(response.text)
+    result_dict["url"] = video_url
+    result_dict["title"] = video_title[:40] if video_title else "未命名影片"
+    result_dict["thumbnail"] = video_thumbnail
+    result_dict["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    return result_dict
 
 # 5. 前端介面
 tab_analyze, tab_library = st.tabs(["🔍 分析新影片", "📚 我的影片靈感庫"])
