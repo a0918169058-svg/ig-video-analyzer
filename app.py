@@ -5,6 +5,7 @@ import os
 import tempfile
 import urllib.request
 import yt_dlp
+import requests
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
@@ -15,11 +16,25 @@ from datetime import datetime
 st.set_page_config(page_title="靈感行動庫 (IG / FB / 短影音)", layout="wide")
 st.title("📱 靈感行動庫 (IG / FB / 短影音)")
 
-# 2. 本地資料儲存與讀取核心
+# 2. Google 試算表 Webhook 與本地快取核心
 DATA_FILE = "history.json"
 saved_api_key = st.secrets.get("GEMINI_API_KEY", "")
+SHEET_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbxnIAV9C_zprMzc643U3p8YXuB6_NFgpZMKQUSRL8EFli_BE4iZVGqocft06CcQa_TSpg/exec"
 
 def load_history():
+    # 優先從 Google 試算表雲端同步讀取
+    if SHEET_WEBHOOK_URL:
+        try:
+            resp = requests.get(SHEET_WEBHOOK_URL, timeout=8)
+            if resp.status_code == 200:
+                cloud_data = resp.json()
+                if isinstance(cloud_data, list):
+                    save_all_history_local(cloud_data)
+                    return cloud_data
+        except Exception:
+            pass
+
+    # 若雲端連線失敗，則使用本地快取
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -40,22 +55,37 @@ def load_history():
             return []
     return []
 
-def save_all_history(records):
+def save_all_history_local(records):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(records, f, ensure_ascii=False, indent=2)
 
 def save_to_history(record):
-    history = load_history()
     record["id"] = f"item_{int(time.time() * 1000)}"
     record["is_done"] = False
     record["user_note"] = ""
+    
+    # 1. 存入本地快取
+    history = []
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                history = json.load(f)
+        except Exception:
+            history = []
     history.insert(0, record)
-    save_all_history(history)
+    save_all_history_local(history)
+
+    # 2. 非同步/即時同步寫入 Google 試算表
+    if SHEET_WEBHOOK_URL:
+        try:
+            requests.post(SHEET_WEBHOOK_URL, json=record, timeout=8)
+        except Exception as e:
+            st.warning(f"同步至 Google 試算表時發生微小延遲：{e}")
 
 def delete_record_by_id(record_id):
     history = load_history()
     new_history = [r for r in history if r.get("id") != record_id]
-    save_all_history(new_history)
+    save_all_history_local(new_history)
 
 def update_record_by_id(record_id, is_done=None, user_note=None):
     history = load_history()
@@ -66,7 +96,7 @@ def update_record_by_id(record_id, is_done=None, user_note=None):
             if user_note is not None:
                 r["user_note"] = user_note
             break
-    save_all_history(history)
+    save_all_history_local(history)
 
 # 3. 定義結構化 AI 輸出格式
 class VideoAnalysisResult(BaseModel):
@@ -123,7 +153,6 @@ def process_and_analyze(video_url: str, api_key: str) -> dict:
     """
 
     if is_youtube:
-        # YouTube 專用通道：抓取中繼資訊以取得標題與縮圖
         ydl_opts = {'quiet': True, 'no_warnings': True, 'skip_download': True}
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -133,7 +162,6 @@ def process_and_analyze(video_url: str, api_key: str) -> dict:
         except Exception:
             pass
         
-        # 直接使用 Part.from_uri 傳入 YouTube 網址，免下載、避開 403 阻斷
         contents_payload = [
             types.Part.from_uri(
                 file_uri=clean_url,
@@ -142,7 +170,6 @@ def process_and_analyze(video_url: str, api_key: str) -> dict:
             prompt
         ]
     else:
-        # IG / FB 通道：使用 yt-dlp 抓取串流並上傳
         with tempfile.TemporaryDirectory() as tmp_dir:
             temp_video_template = os.path.join(tmp_dir, "video.%(ext)s")
             ydl_opts = {
@@ -226,7 +253,7 @@ with tab_analyze:
                 try:
                     result = process_and_analyze(video_input, saved_api_key)
                     save_to_history(result)
-                    st.success("🎉 分析完成！已整理執行重點並存入靈感庫！")
+                    st.success("🎉 分析完成！已同步永久存入 Google 試算表與靈感庫！")
                     
                     c_thumb, c_info = st.columns([1, 3])
                     with c_thumb:
