@@ -97,17 +97,17 @@ class VideoAnalysisResult(BaseModel):
         description="總體分析與星級評定依據"
     )
 
-# 4. 串流分析核心
+# 4. 串流分析核心（免 ffmpeg 也能順利下載單一檔案）
 def process_and_analyze(video_url: str, api_key: str) -> dict:
     clean_url = video_url.split("?si=")[0].split("&")[0]
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         temp_video_template = os.path.join(tmp_dir, "video.%(ext)s")
         
-        # 允許 yt-dlp 自動選擇最合適格式，並自動處理音訊與影像
+        # 關鍵：只抓單一串流（不合併），避免觸發 ffmpeg 缺失錯誤
         ydl_opts = {
             'outtmpl': temp_video_template,
-            'format': 'b/bestvideo+bestaudio/best',
+            'format': 'best[ext=mp4]/bestvideo[ext=mp4]/best',
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
@@ -142,9 +142,9 @@ def process_and_analyze(video_url: str, api_key: str) -> dict:
         3. 評定難易度（1 到 5 星，1 為新手能直接複製，5 為需專業功底）。
         4. 評定預估耗時。
         5. 拆解可執行的清單：
-           - 若為「美食製作」：必須填寫成品名稱，並在 ingredients_or_props 列出影片中出現的食材備料，在 key_steps_or_tips 列出關鍵操作技巧。
-           - 若為「跳舞或搞笑cover」：在 key_steps_or_tips 列出節奏卡點要領或動作記憶點。
-           - 若為「攝影技巧」：在 key_steps_or_tips 提煉運鏡口訣或相機設置建議。
+       - 若為「美食製作」：必須填寫成品名稱，並在 ingredients_or_props 列出影片中出現的食材備料，在 key_steps_or_tips 列出關鍵操作技巧。
+       - 若為「跳舞或搞笑cover」：在 key_steps_or_tips 列出節奏卡點要領或動作記憶點。
+       - 若為「攝影技巧」：在 key_steps_or_tips 提煉運鏡口訣或相機設置建議。
         """
 
         response = None
