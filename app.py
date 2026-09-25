@@ -8,12 +8,12 @@ import yt_dlp
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
-from typing import Optional, Literal
+from typing import Optional, Literal, List
 from datetime import datetime
 
 # 1. 網頁基本設定
-st.set_page_config(page_title="IG 影片靈感庫", layout="wide")
-st.title("📱 我的 IG 靈感與分析庫")
+st.set_page_config(page_title="IG 靈感行動庫", layout="wide")
+st.title("📱 我的 IG 靈感行動庫")
 
 # 2. 本地資料儲存與讀取
 DATA_FILE = "history.json"
@@ -41,7 +41,7 @@ def delete_record(index):
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
 
-# 3. 定義 AI 分析格式
+# 3. 定義升級版 AI 結構化資料格式
 class VideoAnalysisResult(BaseModel):
     category: Literal["攝影技巧", "美食製作", "跳舞或搞笑cover", "其他"] = Field(
         description="影片分類"
@@ -49,15 +49,26 @@ class VideoAnalysisResult(BaseModel):
     difficulty_rating: int = Field(
         description="難易度評分（1到5星）", ge=1, le=5
     )
+    estimated_time: Literal["15分鐘以內 (快手)", "15~30分鐘 (日常)", "30~60分鐘 (精緻)", "1小時以上 (挑戰)"] = Field(
+        description="預估完成此內容所需的時間"
+    )
     dish_name: Optional[str] = Field(
         default=None, 
-        description="若分類為美食製作，提供成品名稱；其餘填 null"
+        description="若為美食製作，提供成品名稱；其餘填 null"
+    )
+    ingredients_or_props: List[str] = Field(
+        default_factory=list,
+        description="若為美食，列出主要食材配料；若為攝影/跳舞，列出所需道具、鏡頭或服裝特點"
+    )
+    key_steps_or_tips: List[str] = Field(
+        default_factory=list,
+        description="執行重點條列（美食：火候或關鍵步驟；跳舞：節奏卡點或動作要領；攝影：運鏡口訣或手機參數）"
     )
     analysis_reason: str = Field(
-        description="給出分類與評分的具體分析原因"
+        description="總體分析與星級評定依據"
     )
 
-# 4. 記憶體串流分析核心
+# 4. 核心分析函式
 def process_and_analyze(ig_url: str, api_key: str) -> dict:
     ydl_opts = {
         'format': 'best[ext=mp4]/best',
@@ -91,20 +102,24 @@ def process_and_analyze(ig_url: str, api_key: str) -> dict:
         video_file = client.files.get(name=video_file.name)
 
     prompt = """
-    分析這段影片的內容，嚴格依據規則進行分類與難易度評定：
-    1. 分類選項僅限：
-       - "攝影技巧"（包含運鏡、構圖、打光、剪輯後製手法等）
-       - "美食製作"（料理烹飪、烘焙、調飲等）
-       - "跳舞或搞笑cover"（舞蹈跟跳、搞笑迷因模仿等）
-       - 不符上述三者則歸為 "其他"
-    2. 評定難易度（1 到 5 顆星，1 為一般新手可輕易完成，5 為需要專業設備或多年訓練）。
-    3. 若為「美食製作」，必須給出具體的「成品名稱」；其他分類此欄位設為 null。
+    分析這段影片的內容，嚴格依據規則進行結構化拆解：
+    1. 分類選項：
+       - "攝影技巧"（運鏡、打光、構圖、特效）
+       - "美食製作"（家常菜、甜品、烘焙、調飲等）
+       - "跳舞或搞笑cover"（舞蹈跟跳、迷因模仿等）
+       - 其他
+    2. 評定難易度（1 到 5 星，1 為新手能直接複製，5 為需專業功底）。
+    3. 評定預估耗時（從選項中挑選最符合的一項）。
+    4. 拆解可執行的清單：
+       - 若為「美食製作」：必須填寫成品名稱，並在 ingredients_or_props 列出影片中出現的食材備料，在 key_steps_or_tips 列出 2~4 點關鍵操作技巧。
+       - 若為「跳舞或搞笑cover」：在 key_steps_or_tips 列出節奏卡點要領、動作記憶點或表演亮點。
+       - 若為「攝影技巧」：在 key_steps_or_tips 提煉運鏡口訣或相機設置建議。
     """
 
     response = None
     last_err = None
 
-    # 針對 gemini-3.8-flash 模型，若遇 503 伺服器忙線自動等待重試最多 3 次
+    # 重試機制抗 503 尖峰
     for attempt in range(3):
         try:
             response = client.models.generate_content(
@@ -133,7 +148,7 @@ def process_and_analyze(ig_url: str, api_key: str) -> dict:
     result_dict["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     return result_dict
 
-# 5. 前端頁面標籤架構
+# 5. 前端操作介面
 tab_analyze, tab_library = st.tabs(["🔍 分析新影片", "📚 我的影片靈感庫"])
 
 with tab_analyze:
@@ -144,23 +159,35 @@ with tab_analyze:
         elif not ig_url:
             st.warning("請先輸入 IG 影片網址！")
         else:
-            with st.spinner("AI 正在串流分析影片中（若遇忙線將自動重試）..."):
+            with st.spinner("AI 正在深度解析動作/食材與步驟重點..."):
                 try:
                     result = process_and_analyze(ig_url, saved_api_key)
                     save_to_history(result)
-                    st.success("🎉 分析完成並已自動儲存至靈感庫！")
+                    st.success("🎉 分析完成！已整理執行重點並存入靈感庫！")
                     
-                    c1, c2 = st.columns(2)
+                    c1, c2, c3 = st.columns(3)
                     with c1:
-                        st.metric("影片分類", result["category"])
+                        st.metric("分類", result["category"])
                     with c2:
                         stars = "★" * result["difficulty_rating"] + "☆" * (5 - result["difficulty_rating"])
-                        st.metric("難易度", f"{stars} ({result['difficulty_rating']}/5)")
+                        st.metric("難度", f"{stars} ({result['difficulty_rating']}/5)")
+                    with c3:
+                        st.metric("預估耗時", result.get("estimated_time", "未知"))
                     
                     if result["category"] == "美食製作" and result.get("dish_name"):
-                        st.info(f"🍳 **料理成品名稱**：{result['dish_name']}")
+                        st.subheader(f"🍳 成品：{result['dish_name']}")
 
-                    with st.expander("🔍 分析依據與說明", expanded=True):
+                    if result.get("ingredients_or_props"):
+                        header = "🛒 食材備料清單" if result["category"] == "美食製作" else "🎒 必備道具/鏡頭"
+                        st.markdown(f"**{header}**：")
+                        st.write("、 ".join(result["ingredients_or_props"]))
+
+                    if result.get("key_steps_or_tips"):
+                        st.markdown("**💡 關鍵執行要點與技巧：**")
+                        for step in result["key_steps_or_tips"]:
+                            st.markdown(f"- {step}")
+
+                    with st.expander("🔍 綜合分析依據", expanded=False):
                         st.write(result["analysis_reason"])
                 except Exception as e:
                     st.error(f"分析失敗：{e}")
@@ -173,7 +200,7 @@ with tab_library:
         col_f1, col_f2 = st.columns(2)
         with col_f1:
             category_filter = st.selectbox(
-                "📂 分類篩選", 
+                "📂 依分類篩選", 
                 ["全部", "美食製作", "跳舞或搞笑cover", "攝影技巧", "其他"]
             )
         with col_f2:
@@ -193,17 +220,31 @@ with tab_library:
         st.divider()
 
         for idx, item in enumerate(filtered):
-            stars = "★" * item["difficulty_rating"] + "☆" * (5 - item["difficulty_rating"])
+            stars = "★" * item.get("difficulty_rating", 1) + "☆" * (5 - item.get("difficulty_rating", 1))
+            time_tag = item.get("estimated_time", "時間未標")
+            
             with st.container():
-                c1, c2, c3 = st.columns([4, 2, 1])
+                c1, c2, c3 = st.columns([5, 2, 1])
                 with c1:
                     title_text = f"🍳 {item['dish_name']}" if item["category"] == "美食製作" and item.get("dish_name") else f"🎬 {item.get('category')}"
                     st.subheader(title_text)
-                    st.write(f"**分析細節**：{item.get('analysis_reason')}")
+                    
+                    if item.get("ingredients_or_props"):
+                        header = "🛒 食材" if item["category"] == "美食製作" else "🎒 道具/特點"
+                        st.caption(f"**{header}**：{'、 '.join(item['ingredients_or_props'])}")
+
+                    if item.get("key_steps_or_tips"):
+                        st.markdown("**重點步驟 / 技巧口訣**：")
+                        for step in item["key_steps_or_tips"]:
+                            st.markdown(f"- {step}")
+
                     st.caption(f"新增時間：{item.get('created_at', '未知')} | [🔗 開啟 IG 原影片]({item.get('url')})")
+
                 with c2:
-                    st.markdown(f"**類別**：`{item.get('category')}`")
-                    st.markdown(f"**難度**：`{stars}` ({item['difficulty_rating']}/5)")
+                    st.markdown(f"**分類**：`{item.get('category')}`")
+                    st.markdown(f"**難度**：`{stars}` ({item.get('difficulty_rating', 1)}/5)")
+                    st.markdown(f"**耗時**：`⏱️ {time_tag}`")
+
                 with c3:
                     if st.button("🗑️ 刪除", key=f"del_{idx}"):
                         delete_record(idx)
