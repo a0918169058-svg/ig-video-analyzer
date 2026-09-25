@@ -187,7 +187,9 @@ def process_and_analyze(ig_url: str, api_key: str) -> dict:
 tab_analyze, tab_library = st.tabs(["🔍 分析新影片", "📚 我的影片靈感庫"])
 
 with tab_analyze:
-    ig_url = st.text_input("貼上 Instagram Reels / 影片連結", placeholder="https://www.instagram.com/reel/...")
+    # 自動讀取網址參數 ?url=
+default_url = st.query_params.get("url", "")
+ig_url = st.text_input("貼上 Instagram Reels / 影片連結", value=default_url, placeholder="https://www.instagram.com/reel/...")
     if st.button("開始分析並儲存至 Google 試算表", type="primary"):
         if not saved_api_key:
             st.error("尚未設定 GEMINI_API_KEY！")
