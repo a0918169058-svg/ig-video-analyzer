@@ -1,9 +1,8 @@
 import streamlit as st
-import io
 import time
 import json
 import os
-import urllib.request
+import tempfile
 import yt_dlp
 from google import genai
 from google.genai import types
@@ -98,104 +97,90 @@ class VideoAnalysisResult(BaseModel):
         description="總體分析與星級評定依據"
     )
 
-# 4. 串流分析核心
+# 4. 串流分析核心（使用暫存檔確保 100% 正確編碼相容性）
 def process_and_analyze(video_url: str, api_key: str) -> dict:
     clean_url = video_url.split("?si=")[0].split("&")[0]
 
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'noplaylist': True,
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(clean_url, download=False)
-        video_title = info.get('title', '短影音')
-        video_thumbnail = info.get('thumbnail', '')
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        temp_video_path = os.path.join(tmp_dir, "temp_video.mp4")
         
-        video_direct_url = None
+        ydl_opts = {
+            'outtmpl': temp_video_path,
+            'format': 'best[ext=mp4]/best',
+            'quiet': True,
+            'no_warnings': True,
+            'noplaylist': True,
+        }
         
-        if 'formats' in info:
-            for f in reversed(info['formats']):
-                if f.get('url') and f.get('vcodec') != 'none' and f.get('acodec') != 'none':
-                    video_direct_url = f.get('url')
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(clean_url, download=True)
+            video_title = info.get('title', '短影音')
+            video_thumbnail = info.get('thumbnail', '')
+
+        # 如果檔案名稱被加了副檔名，做路徑相容
+        actual_path = temp_video_path
+        if not os.path.exists(actual_path):
+            files = os.listdir(tmp_dir)
+            if files:
+                actual_path = os.path.join(tmp_dir, files[0])
+            else:
+                raise ValueError("影片下載失敗，請確認該影片是否為公開貼文。")
+
+        client = genai.Client(api_key=api_key)
+        video_file = client.files.upload(
+            file=actual_path,
+            config={'mime_type': 'video/mp4'}
+        )
+
+        while video_file.state.name != "ACTIVE":
+            if video_file.state.name == "FAILED":
+                raise ValueError("Google 伺服器處理該影片轉檔失敗，可能該影片受版權保護。")
+            time.sleep(2)
+            video_file = client.files.get(name=video_file.name)
+
+        prompt = """
+        分析這段影片的內容，嚴格依據規則進行結構化拆解：
+        1. 分類選項：攝影技巧、美食製作、跳舞或搞笑cover、其他。
+        2. 評定所需人數：單人即可、雙人搭檔、3~4人 (小團體)、5人以上 (大陣仗)。請仔細看畫面中跳舞的人數、拍照姿勢需要幾人出鏡或掌鏡。
+        3. 評定難易度（1 到 5 星，1 為新手能直接複製，5 為需專業功底）。
+        4. 評定預估耗時。
+        5. 拆解可執行的清單：
+           - 若為「美食製作」：必須填寫成品名稱，並在 ingredients_or_props 列出影片中出現的食材備料，在 key_steps_or_tips 列出關鍵操作技巧。
+           - 若為「跳舞或搞笑cover」：在 key_steps_or_tips 列出節奏卡點要領或動作記憶點。
+           - 若為「攝影技巧」：在 key_steps_or_tips 提煉運鏡口訣或相機設置建議。
+        """
+
+        response = None
+        last_err = None
+
+        for attempt in range(3):
+            try:
+                response = client.models.generate_content(
+                    model='gemini-3.8-flash',
+                    contents=[video_file, prompt],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=VideoAnalysisResult,
+                        temperature=0.2,
+                    ),
+                )
+                if response:
                     break
-            if not video_direct_url:
-                for f in reversed(info['formats']):
-                    if f.get('url') and f.get('vcodec') != 'none':
-                        video_direct_url = f.get('url')
-                        break
-        
-        if not video_direct_url:
-            video_direct_url = info.get('url')
+            except Exception as e:
+                last_err = e
+                time.sleep(15)
 
-        if not video_direct_url:
-            raise ValueError("無法解析出影片串流直鏈，請確認該影片是否為公開貼文。")
+        client.files.delete(name=video_file.name)
 
-    req = urllib.request.Request(
-        video_direct_url, 
-        headers={'User-Agent': 'Mozilla/5.0'}
-    )
-    video_buffer = io.BytesIO()
-    with urllib.request.urlopen(req) as resp:
-        video_buffer.write(resp.read())
-    video_buffer.seek(0)
+        if not response:
+            raise last_err
 
-    client = genai.Client(api_key=api_key)
-    video_file = client.files.upload(
-        file=video_buffer,
-        config={'mime_type': 'video/mp4'}
-    )
-
-    # 嚴格等待直到影片轉檔完成變為 ACTIVE 狀態
-    while video_file.state.name != "ACTIVE":
-        if video_file.state.name == "FAILED":
-            raise ValueError("Google 伺服器處理該影片轉檔失敗，請更換連結或稍後重試。")
-        time.sleep(2)
-        video_file = client.files.get(name=video_file.name)
-
-    prompt = """
-    分析這段影片的內容，嚴格依據規則進行結構化拆解：
-    1. 分類選項：攝影技巧、美食製作、跳舞或搞笑cover、其他。
-    2. 評定所需人數：單人即可、雙人搭檔、3~4人 (小團體)、5人以上 (大陣仗)。請仔細看畫面中跳舞的人數、拍照姿勢需要幾人出鏡或掌鏡。
-    3. 評定難易度（1 到 5 星，1 為新手能直接複製，5 為需專業功底）。
-    4. 評定預估耗時。
-    5. 拆解可執行的清單：
-       - 若為「美食製作」：必須填寫成品名稱，並在 ingredients_or_props 列出影片中出現的食材備料，在 key_steps_or_tips 列出關鍵操作技巧。
-       - 若為「跳舞或搞笑cover」：在 key_steps_or_tips 列出節奏卡點要領或動作記憶點。
-       - 若為「攝影技巧」：在 key_steps_or_tips 提煉運鏡口訣或相機設置建議。
-    """
-
-    response = None
-    last_err = None
-
-    for attempt in range(3):
-        try:
-            response = client.models.generate_content(
-                model='gemini-3.8-flash',
-                contents=[video_file, prompt],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=VideoAnalysisResult,
-                    temperature=0.2,
-                ),
-            )
-            if response:
-                break
-        except Exception as e:
-            last_err = e
-            time.sleep(15)
-
-    client.files.delete(name=video_file.name)
-
-    if not response:
-        raise last_err
-
-    result_dict = json.loads(response.text)
-    result_dict["url"] = video_url
-    result_dict["title"] = video_title[:40] if video_title else "未命名影片"
-    result_dict["thumbnail"] = video_thumbnail
-    result_dict["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-    return result_dict
+        result_dict = json.loads(response.text)
+        result_dict["url"] = video_url
+        result_dict["title"] = video_title[:40] if video_title else "未命名影片"
+        result_dict["thumbnail"] = video_thumbnail
+        result_dict["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        return result_dict
 
 # 5. 前端介面
 tab_analyze, tab_library = st.tabs(["🔍 分析新影片", "📚 我的影片靈感庫"])
